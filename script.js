@@ -1020,6 +1020,119 @@ async function showGameDetail(game) {
       <div class="gd-lp-text">${game.lastPlayText}</div>
     </div>` : '';
 
+  /* ── AI Model Comparison: Formula + Logistic Regression + Neural Net ──
+     Same three-card layout used in the series modal so the user can
+     compare picks across all three models for any live/final game. */
+  const homeName = game.homeFullName || game.homeTeam?.name || game.homeName;
+  const awayName = game.awayFullName || game.awayTeam?.name || game.awayName;
+  const homeLogo = getTeamLogoUrl(game.homeAbbr);
+  const awayLogo = getTeamLogoUrl(game.awayAbbr);
+
+  /* Card builder for this modal */
+  const gdModelCard = (label, status, winnerName, winnerAbbr, winnerCol, winnerLogo, pct, sub) => `
+    <div class="sd-model-card">
+      <div class="sd-model-head">
+        <span class="sd-model-name">${label}</span>
+        <span class="sd-model-status">${status}</span>
+      </div>
+      <div class="sd-model-pick">
+        ${winnerLogo ? `<img class="sd-model-logo" src="${winnerLogo}" alt="${winnerName||''}" onerror="this.style.display='none'">` : ''}
+        <div>
+          <div class="sd-model-winner" style="color:${winnerCol||'var(--ink-500)'}">${winnerName || '—'}</div>
+          ${sub ? `<div class="sd-model-sub">${sub}</div>` : ''}
+        </div>
+        <span class="sd-model-pct" style="color:${winnerCol||'var(--ink-500)'}">${pct != null ? pct + '%' : '—'}</span>
+      </div>
+    </div>`;
+
+  /* Formula pick — use HoopHQ's own model (homeWP/awayWP) */
+  const formulaWinHome = homeWP >= awayWP;
+  const formulaWinner = formulaWinHome ? homeName : awayName;
+  const formulaPct    = Math.max(homeWP, awayWP);
+  const formulaAbbr   = formulaWinHome ? game.homeAbbr : game.awayAbbr;
+  const formulaCol    = formulaWinHome ? homeCol : awayCol;
+  const formulaLogo   = formulaWinHome ? homeLogo : awayLogo;
+  const gdFormulaCard = gdModelCard('Formula', 'Net rtg + win% + form',
+    formulaWinner, formulaAbbr, formulaCol, formulaLogo, formulaPct, 'Rule-based pick');
+
+  /* LR pick — Game LR from AI Lab */
+  let gdLRCard;
+  try {
+    const aiPred = typeof getAIGamePrediction === 'function'
+      ? getAIGamePrediction(homeName, awayName)
+      : { lr: null };
+    if (aiPred.lr != null) {
+      const lrIsHome = aiPred.lr >= 0.5;
+      const lrPct = Math.round(Math.max(aiPred.lr, 1 - aiPred.lr) * 100);
+      gdLRCard = gdModelCard('Logistic Regression', 'Trained on past games',
+        lrIsHome ? homeName : awayName,
+        lrIsHome ? game.homeAbbr : game.awayAbbr,
+        lrIsHome ? homeCol : awayCol,
+        lrIsHome ? homeLogo : awayLogo,
+        lrPct, 'AI Lab model');
+    } else {
+      gdLRCard = gdModelCard('Logistic Regression', 'Not trained yet',
+        null, null, null, null, null, 'Train at AI Lab');
+    }
+  } catch {
+    gdLRCard = gdModelCard('Logistic Regression', 'Unavailable',
+      null, null, null, null, null, '');
+  }
+
+  /* NN pick — TF.js Game NN, loads async */
+  const gdNNId = `gd-nn-${Date.now()}`;
+  const gdNNPlaceholder = (typeof tf !== 'undefined')
+    ? `<div class="sd-model-card" id="${gdNNId}">
+         <div class="sd-model-head">
+           <span class="sd-model-name">Neural Network</span>
+           <span class="sd-model-status">Loading…</span>
+         </div>
+         <div class="sd-model-pick"><div><div class="sd-model-winner">—</div><div class="sd-model-sub">TF.js model</div></div><span class="sd-model-pct">—</span></div>
+       </div>`
+    : gdModelCard('Neural Network', 'TF.js not loaded', null, null, null, null, null, '');
+
+  if (typeof tf !== 'undefined' && typeof loadNNModel === 'function' &&
+      typeof extractGameFeatures === 'function' && typeof nnPredict === 'function') {
+    setTimeout(async () => {
+      try {
+        const model = await loadNNModel('game-nn');
+        const feats = extractGameFeatures(homeName, awayName);
+        let html;
+        if (model && feats) {
+          const p = nnPredict(model, feats);
+          const nnIsHome = p >= 0.5;
+          const nnPct = Math.round(Math.max(p, 1 - p) * 100);
+          html = gdModelCard('Neural Network', 'TensorFlow.js · trained',
+            nnIsHome ? homeName : awayName,
+            nnIsHome ? game.homeAbbr : game.awayAbbr,
+            nnIsHome ? homeCol : awayCol,
+            nnIsHome ? homeLogo : awayLogo,
+            nnPct, 'AI Lab model');
+        } else {
+          html = gdModelCard('Neural Network', 'Not trained yet',
+            null, null, null, null, null, 'Train at AI Lab');
+        }
+        const el = document.getElementById(gdNNId);
+        if (el) el.outerHTML = html;
+      } catch {
+        const el = document.getElementById(gdNNId);
+        if (el) el.outerHTML = gdModelCard('Neural Network', 'Unavailable',
+          null, null, null, null, null, '');
+      }
+    }, 50);
+  }
+
+  const gdModelsSection = `
+    <div class="gd-section sd-models-section">
+      <div class="gd-section-title">AI Model Comparison <span class="ai-badge" style="margin-left:8px">3 models</span></div>
+      <div class="sd-models-grid">
+        ${gdFormulaCard}
+        ${gdLRCard}
+        ${gdNNPlaceholder}
+      </div>
+      <div class="sd-models-note">Three independent picks for ${game.homeAbbr} vs ${game.awayAbbr}. The Formula is rule-based; LR and NN learn from past games.</div>
+    </div>`;
+
   /* Render the modal */
   mc.innerHTML = `
     <div class="gd-header">
@@ -1064,6 +1177,8 @@ async function showGameDetail(game) {
         </div>
       </div>
     </div>
+
+    ${gdModelsSection}
 
     <div class="gd-section">
       <div class="gd-section-title">Game Flow</div>
@@ -5692,8 +5807,15 @@ async function autoCollectAndRetrain() {
   const totalGames = getAIGames().length;
   const lastCount = meta.lastTrainCount || 0;
 
-  if (totalGames > lastCount && totalGames >= 5) {
-    /* Retrain LR models (lightweight, works on all pages) */
+  /* ── Auto-train all three LR models so visitors never have to click
+        "Train" at the AI Lab. Models persist to localStorage; we only
+        retrain when new games come in (or when a slot is empty). ── */
+  const needGameLR   = !meta.lrTrained        || (totalGames > lastCount && totalGames >= 5);
+  const needSeriesLR = !meta.lrSeriesTrained;
+  const needPlayerLR = !meta.lrPlayerTrained;
+
+  /* GAME LR */
+  if (needGameLR) {
     try {
       const data = generateGameTrainingData();
       if (data.xTrain.length >= 5) {
@@ -5708,7 +5830,6 @@ async function autoCollectAndRetrain() {
         meta.lrTrained = true;
         saveAIMeta(meta);
 
-        /* Append to accuracy trend log */
         try {
           const accLog = JSON.parse(localStorage.getItem(AI_ACC_KEY) || '[]');
           accLog.push({ date: new Date().toISOString(), accuracy: acc, games: totalGames, correct: acc >= 0.5 });
@@ -5716,9 +5837,43 @@ async function autoCollectAndRetrain() {
         } catch {}
 
         if (newGames > 0) showAIToast(`Model updated with ${newGames} new game${newGames>1?'s':''} — accuracy: ${(acc*100).toFixed(0)}%`);
-        console.log(`[AI] Auto-retrained LR on ${data.total} samples, accuracy: ${(acc*100).toFixed(1)}%`);
+        console.log(`[AI] Auto-retrained Game LR on ${data.total} samples, accuracy: ${(acc*100).toFixed(1)}%`);
       }
-    } catch (e) { console.warn('[AI] Auto-retrain failed:', e.message); }
+    } catch (e) { console.warn('[AI] Game LR auto-retrain failed:', e.message); }
+  }
+
+  /* SERIES LR — only train once (or when explicitly retrained from AI Lab) */
+  if (needSeriesLR) {
+    try {
+      const sData = generateSeriesTrainingData();
+      if (sData.xTrain.length >= 5) {
+        const featLen = sData.xTrain[0].length;
+        const lr = new LogisticRegression(featLen, 0.01);
+        await lr.train(sData.xTrain, sData.yTrain, 30);
+        lr.save(AI_LR_SERIES);
+        const acc = lr.accuracy(sData.xTest, sData.yTest);
+        meta.seriesAccuracy = acc;
+        meta.lrSeriesTrained = true;
+        saveAIMeta(meta);
+        console.log(`[AI] Auto-trained Series LR on ${sData.total} samples, accuracy: ${(acc*100).toFixed(1)}%`);
+      }
+    } catch (e) { console.warn('[AI] Series LR auto-train failed:', e.message); }
+  }
+
+  /* PLAYER LR — uses Linear Regression on player features (continuous) */
+  if (needPlayerLR && typeof LinearRegression === 'function' && typeof generatePlayerTrainingData === 'function') {
+    try {
+      const pData = generatePlayerTrainingData();
+      if (pData.xTrain && pData.xTrain.length >= 5) {
+        const featLen = pData.xTrain[0].length;
+        const lr = new LinearRegression(featLen, 0.01);
+        await lr.train(pData.xTrain, pData.yTrain, 30);
+        lr.save(AI_LR_PLAYER);
+        meta.lrPlayerTrained = true;
+        saveAIMeta(meta);
+        console.log(`[AI] Auto-trained Player LR on ${pData.total} samples`);
+      }
+    } catch (e) { console.warn('[AI] Player LR auto-train failed:', e.message); }
   }
 
   /* Refresh dashboard if on AI page (auto-collect finishes after initAIPage) */
