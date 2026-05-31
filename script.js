@@ -359,6 +359,27 @@ const ESPN_ABBR_MAP = {
 };
 function espnToAbbr(espnAbbr) { return ESPN_ABBR_MAP[espnAbbr] || espnAbbr; }
 
+/* ── Team logo URL helper ──
+ * ESPN hosts official NBA team logos at predictable URLs on their CDN,
+ * which is fine since the rest of the app already pulls data from ESPN.
+ * Our internal team `abbr` (e.g. 'GSW', 'NYK', 'SAS') maps to ESPN's
+ * lowercase slug — a few teams use a non-standard slug (gs/ny/sa/no/utah/wsh). */
+const LOGO_SLUG_MAP = {
+  GSW: 'gs', NYK: 'ny', SAS: 'sa', NOP: 'no', UTA: 'utah', WAS: 'wsh',
+};
+function getTeamLogoUrl(teamOrName) {
+  if (!teamOrName) return '';
+  let abbr;
+  if (typeof teamOrName === 'string') {
+    const t = NBA_TEAMS.find(x => x.name === teamOrName || x.abbr === teamOrName);
+    abbr = t ? t.abbr : teamOrName.slice(0,3).toUpperCase();
+  } else {
+    abbr = teamOrName.abbr;
+  }
+  const slug = (LOGO_SLUG_MAP[abbr] || abbr).toLowerCase();
+  return `https://a.espncdn.com/i/teamlogos/nba/500/${slug}.png`;
+}
+
 /* Fetch live scores from ESPN's free API (no auth, no CORS issues) */
 async function fetchNBALiveScores() {
   const controller = new AbortController();
@@ -917,10 +938,13 @@ function buildLiveGameCard(game) {
     <div class="gc-wp-labels"><span>${homeWP}%</span><span>Win Prob.</span><span>${awayWP}%</span></div>
   ` : '';
 
+  const homeLogo = getTeamLogoUrl(game.homeAbbr);
+  const awayLogo = getTeamLogoUrl(game.awayAbbr);
   card.innerHTML = `
     ${statusHTML}
     <div class="game-teams">
       <div class="team-block">
+        <img class="gc-team-logo" src="${homeLogo}" alt="" onerror="this.style.display='none'">
         <span class="team-abbr">${game.homeAbbr}</span>
         <span class="team-name-small">${game.homeName}</span>
         ${homeScoreHTML}
@@ -928,6 +952,7 @@ function buildLiveGameCard(game) {
       </div>
       <div class="at-badge">${showScores ? 'vs' : '@'}</div>
       <div class="team-block">
+        <img class="gc-team-logo" src="${awayLogo}" alt="" onerror="this.style.display='none'">
         <span class="team-abbr">${game.awayAbbr}</span>
         <span class="team-name-small">${game.awayName}</span>
         ${awayScoreHTML}
@@ -3592,15 +3617,20 @@ function bcSeriesHTML(s, isFinals = false) {
       </div>
     </div>` : '';
 
+  const t1Logo = getTeamLogoUrl(t1);
+  const t2Logo = getTeamLogoUrl(t2);
+
   return `
     <div class="bc-series bc-clickable${done ? ' bc-done' : ''}${s.simulated ? ' bc-sim' : ''}${isFinals ? ' bc-finals-card' : ''}" data-key="${key}" data-t1="${s.team1}" data-t2="${s.team2}" data-t1w="${s.t1w}" data-t2w="${s.t2w}" data-round="${s.round||0}">
       <div class="bc-team${t1wins ? ' bc-winner' : done ? ' bc-lost' : ''}">
         <div class="bc-bar" style="background:${t1col}"></div>
+        <img class="bc-logo" src="${t1Logo}" alt="" onerror="this.style.display='none'">
         <span class="bc-name" title="${s.team1}">${s.team1}</span>
         <span class="bc-w${t1wins ? ' bc-ww' : ''}">${s.t1w}</span>
       </div>
       <div class="bc-team${t2wins ? ' bc-winner' : done ? ' bc-lost' : ''}">
         <div class="bc-bar" style="background:${t2col}"></div>
+        <img class="bc-logo" src="${t2Logo}" alt="" onerror="this.style.display='none'">
         <span class="bc-name" title="${s.team2}">${s.team2}</span>
         <span class="bc-w${t2wins ? ' bc-ww' : ''}">${s.t2w}</span>
       </div>
@@ -3771,9 +3801,116 @@ function showSeriesDetail(s) {
     statusHTML = `<div class="sd-status">Series not yet started</div>`;
   }
 
-  /* Win probability prediction */
+  /* Win probability prediction (formula) */
   const hasPred = Object.keys(_pStrengthMap).length > 0;
   const pred    = hasPred ? getSeriesPrediction(s) : null;
+
+  /* ── AI Model Comparison: Formula + Logistic Regression + Neural Net ──
+     Three models, side-by-side. The formula is the existing one above;
+     LR and NN come from the AI Lab (trained on real game results).
+     Each card shows the model's winner pick + confidence percentage. */
+  let modelsSection = '';
+  if (pred) {
+    const t1Logo = getTeamLogoUrl(t1Info);
+    const t2Logo = getTeamLogoUrl(t2Info);
+
+    /* Helper: turn a model output (winner name + percentage 0-100) into a card */
+    const modelCard = (label, status, winnerName, pct, sub) => {
+      const isT1 = winnerName === s.team1;
+      const wCol = isT1 ? t1col : t2col;
+      const wLogo = isT1 ? t1Logo : t2Logo;
+      const wAbbr = isT1 ? t1a : t2a;
+      return `
+        <div class="sd-model-card">
+          <div class="sd-model-head">
+            <span class="sd-model-name">${label}</span>
+            <span class="sd-model-status">${status}</span>
+          </div>
+          <div class="sd-model-pick">
+            ${winnerName ? `<img class="sd-model-logo" src="${wLogo}" alt="${winnerName}" onerror="this.style.display='none'">` : ''}
+            <div>
+              <div class="sd-model-winner" style="color:${wCol}">${winnerName ? winnerName : '—'}</div>
+              ${sub ? `<div class="sd-model-sub">${sub}</div>` : ''}
+            </div>
+            <span class="sd-model-pct" style="color:${wCol}">${pct != null ? pct + '%' : '—'}</span>
+          </div>
+        </div>`;
+    };
+
+    /* Formula card — pre-built */
+    const formulaCard = modelCard(
+      'Formula',
+      'Net rtg + win% + form',
+      pred.winner,
+      Math.max(pred.t1Pct, pred.t2Pct),
+      `In ${pred.expectedGames} games`
+    );
+
+    /* LR card — from AI Lab (Logistic Regression) */
+    let lrCard;
+    try {
+      const aiSeries = typeof getAISeriesPrediction === 'function'
+        ? getAISeriesPrediction(s.team1, s.team2, s.t1w, s.t2w)
+        : { lr: null };
+      if (aiSeries.lr != null) {
+        const lrP1 = aiSeries.lr;
+        const lrWinner = lrP1 >= 0.5 ? s.team1 : s.team2;
+        const lrPct = Math.round(Math.max(lrP1, 1 - lrP1) * 100);
+        lrCard = modelCard('Logistic Regression', 'Trained on past series', lrWinner, lrPct, 'AI Lab model');
+      } else {
+        lrCard = modelCard('Logistic Regression', 'Not trained yet', null, null, 'Train at AI Lab');
+      }
+    } catch {
+      lrCard = modelCard('Logistic Regression', 'Unavailable', null, null, '');
+    }
+
+    /* NN card — TensorFlow.js model, async load */
+    const nnCardId = `sd-nn-${Date.now()}`;
+    const nnCardPlaceholder = `
+      <div class="sd-model-card" id="${nnCardId}">
+        <div class="sd-model-head">
+          <span class="sd-model-name">Neural Network</span>
+          <span class="sd-model-status">Loading…</span>
+        </div>
+        <div class="sd-model-pick"><div><div class="sd-model-winner">—</div><div class="sd-model-sub">TF.js model</div></div><span class="sd-model-pct">—</span></div>
+      </div>`;
+
+    /* Render placeholder, then resolve NN asynchronously */
+    if (typeof tf !== 'undefined' && typeof loadNNModel === 'function' &&
+        typeof extractSeriesFeatures === 'function' && typeof nnPredict === 'function') {
+      setTimeout(async () => {
+        try {
+          const model = await loadNNModel('series-nn');
+          const feats = extractSeriesFeatures(s.team1, s.team2, s.t1w, s.t2w);
+          let html;
+          if (model && feats) {
+            const p1 = nnPredict(model, feats);
+            const nnWinner = p1 >= 0.5 ? s.team1 : s.team2;
+            const nnPct = Math.round(Math.max(p1, 1 - p1) * 100);
+            html = modelCard('Neural Network', 'TensorFlow.js · trained', nnWinner, nnPct, 'AI Lab model');
+          } else {
+            html = modelCard('Neural Network', 'Not trained yet', null, null, 'Train at AI Lab');
+          }
+          const el = document.getElementById(nnCardId);
+          if (el) el.outerHTML = html;
+        } catch {
+          const el = document.getElementById(nnCardId);
+          if (el) el.outerHTML = modelCard('Neural Network', 'Unavailable', null, null, '');
+        }
+      }, 50);
+    }
+
+    modelsSection = `
+      <div class="sd-section sd-models-section">
+        <div class="sd-section-title">AI Model Comparison <span class="ai-badge" style="margin-left:8px">3 models</span></div>
+        <div class="sd-models-grid">
+          ${formulaCard}
+          ${lrCard}
+          ${typeof tf !== 'undefined' ? nnCardPlaceholder : modelCard('Neural Network', 'TF.js not loaded', null, null, '')}
+        </div>
+        <div class="sd-models-note">Three independent predictions for ${t1a} vs ${t2a}. The Formula is rule-based; LR and NN learn from past games — train them at the AI Lab.</div>
+      </div>`;
+  }
 
   let predSection = '';
   if (pred) {
@@ -3950,12 +4087,15 @@ function showSeriesDetail(s) {
   }
 
   /* Assemble full modal */
+  const t1LogoUrl = getTeamLogoUrl(t1Info);
+  const t2LogoUrl = getTeamLogoUrl(t2Info);
   mc.innerHTML = `
     <div class="sd-header">
       <div class="sd-round-label">${roundName}</div>
       <div class="sd-matchup">
         <div class="sd-team-hero">
           <div class="sd-team-bar" style="background:${t1col}"></div>
+          <img class="sd-team-logo" src="${t1LogoUrl}" alt="${s.team1}" onerror="this.style.display='none'">
           <div class="sd-team-info">
             <div class="sd-team-name">${s.team1}</div>
             <div class="sd-team-record">${fmtRec(st1.wins, st1.losses)} &middot; ${fmtPct(st1.winPct)}</div>
@@ -3969,12 +4109,14 @@ function showSeriesDetail(s) {
             <div class="sd-team-name">${s.team2}</div>
             <div class="sd-team-record">${fmtRec(st2.wins, st2.losses)} &middot; ${fmtPct(st2.winPct)}</div>
           </div>
+          <img class="sd-team-logo" src="${t2LogoUrl}" alt="${s.team2}" onerror="this.style.display='none'">
           <div class="sd-team-bar" style="background:${t2col}"></div>
         </div>
       </div>
       ${statusHTML}
     </div>
     ${gameDots}
+    ${modelsSection}
     ${predSection}
     ${compSection}
     ${h2hSection}

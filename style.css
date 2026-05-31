@@ -3343,3 +3343,254 @@ h4, h5, h6 { font-family: var(--font-sans); font-weight: 700; color: var(--ink-9
 /* Green/red mini stat overrides — keep semantic, just warmer red */
 .red-val { color: var(--loss) !important; }
 .green-val { color: var(--win) !important; }
+
+/* ─── Series detail modal — bright text on dark broadcast header,
+       team logos, three-model comparison cards ─── */
+
+/* Header keeps its dark "broadcast strip" look but the text becomes
+   bright paper/cream so team names are readable */
+.sd-header {
+  background: linear-gradient(135deg, var(--ink-900) 0%, var(--ink-800) 100%) !important;
+  border-bottom: 1px solid var(--ink-700) !important;
+  padding: 24px 28px 18px;
+  color: var(--paper);
+}
+.sd-round-label {
+  font-family: var(--font-mono);
+  color: var(--flame-400);
+  letter-spacing: var(--tracking-caps);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.sd-team-name {
+  color: var(--paper) !important;
+  font-family: var(--font-expanded);
+  font-weight: 800;
+  letter-spacing: var(--tracking-tight);
+  font-size: 1.05rem;
+  text-transform: uppercase;
+}
+.sd-team-record {
+  color: var(--ink-300) !important;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+}
+.sd-series-wins {
+  font-family: var(--font-mono) !important;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.sd-vs {
+  color: var(--ink-400) !important;
+  font-family: var(--font-expanded);
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+.sd-status {
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  letter-spacing: 0.04em;
+}
+.sd-status.sd-done   { color: var(--win); }
+.sd-status.sd-active { color: var(--flame-400); }
+
+/* Team logo in header */
+.sd-team-logo {
+  width: 44px; height: 44px;
+  object-fit: contain;
+  flex-shrink: 0;
+  filter: drop-shadow(0 2px 6px rgba(0,0,0,0.4));
+}
+
+/* Section styling */
+.sd-section {
+  border-bottom: 1px solid var(--ink-200) !important;
+}
+.sd-section:last-child { border-bottom: none !important; }
+.sd-section-title {
+  color: var(--flame-500) !important;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  font-size: 0.78rem;
+}
+
+/* Comparison table */
+.sd-comp-table th,
+.sd-comp-table td {
+  font-family: var(--font-mono);
+  color: var(--ink-700);
+  font-variant-numeric: tabular-nums;
+  border-color: var(--ink-100);
+}
+.sd-comp-stat-name { color: var(--ink-500); }
+.sd-better { color: var(--win) !important; }
+.sd-worse  { color: var(--loss) !important; }
+
+/* Key Factors list */
+.sd-factors-list li {
+  color: var(--ink-700);
+  font-family: var(--font-sans);
+}
+.sd-factors-list li::marker { color: var(--flame-500); }
+
+/* Three-model comparison grid */
+.sd-models-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+.sd-model-card {
+  background: var(--paper);
+  border: 1px solid var(--ink-200);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  transition: border-color var(--dur-fast) var(--ease-out),
+              transform var(--dur-fast) var(--ease-out);
+}
+.sd-model-card:hover {
+  border-color: rgba(238,90,36,0.4);
+  transform: translateY(-1px);
+}
+.sd-model-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 10px;
+}
+.sd-model-name {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--ink-900);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.sd-model-status {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  color: var(--ink-400);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.sd-model-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sd-model-logo {
+  width: 32px; height: 32px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+.sd-model-winner {
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 0.88rem;
+  line-height: 1.1;
+}
+.sd-model-sub {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--ink-500);
+  letter-spacing: 0.03em;
+  margin-top: 2px;
+}
+.sd-model-pct {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 1.5rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.sd-models-note {
+  margin-top: 12px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--ink-500);
+  line-height: 1.5;
+}
+
+/* ─── Bracket card team logos (small, next to team name) ─── */
+.bc-team {
+  position: relative;
+  align-items: center;
+}
+.bc-logo {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+  flex-shrink: 0;
+  margin-right: 4px;
+}
+
+/* ─── Scoreboard card team logos (medium, above abbr) ─── */
+.gc-team-logo {
+  display: block;
+  width: 38px;
+  height: 38px;
+  object-fit: contain;
+  margin: 0 auto 4px;
+  filter: drop-shadow(0 1px 3px rgba(10,7,3,0.15));
+}
+
+/* Series modal pred-bar fills — use court teal + flame to match brand */
+.sd-pred-fill { transition: width var(--dur-slow) var(--ease-out); }
+.sd-pred-bar { background: var(--ink-100); border-radius: var(--radius-pill); overflow: hidden; }
+.sd-pred-label-left,
+.sd-pred-label-right {
+  font-family: var(--font-mono);
+  font-weight: 700;
+}
+.sd-pred-detail,
+.sd-edge-note {
+  font-family: var(--font-mono);
+  color: var(--ink-700);
+}
+.sd-pred-breakdown { display: flex; gap: 14px; justify-content: center; margin: 10px 0; }
+.sd-pb-item { text-align: center; }
+.sd-pb-num {
+  display: block;
+  font-family: var(--font-mono); font-weight: 700;
+  font-size: 1.4rem; color: var(--ink-900);
+  font-variant-numeric: tabular-nums;
+}
+.sd-pb-label {
+  display: block;
+  font-family: var(--font-mono); font-size: 0.66rem;
+  color: var(--ink-500); letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Head-to-head section */
+.sd-h2h-summary {
+  display: flex; align-items: center; justify-content: center; gap: 12px;
+  font-family: var(--font-mono); font-size: 1.2rem; margin: 8px 0 14px;
+}
+.sd-h2h-dash { color: var(--ink-300); }
+.sd-h2h-table th,
+.sd-h2h-table td {
+  font-family: var(--font-mono);
+  color: var(--ink-700);
+  border-color: var(--ink-100);
+  font-size: 0.82rem;
+}
+.sd-h2h-table th { color: var(--ink-500); letter-spacing: 0.06em; text-transform: uppercase; font-size: 0.7rem; }
+
+/* Series progress dots (game win indicators) */
+.sd-dots-team { font-family: var(--font-mono); font-weight: 700; }
+.sd-dot {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.75rem;
+  color: #FFFFFF;
+}
+.sd-dot-empty {
+  background: var(--ink-100) !important;
+  border: 1px solid var(--ink-200);
+}
