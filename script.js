@@ -21,18 +21,26 @@ const HEADERS = { 'Authorization': API_KEY };
    These are overridden by trained weights
    stored in localStorage after import.
 ════════════════════════════════════════ */
+/* Weighted factors (must sum to 1.0). The 2025 rebalance adds
+   season-long winPct + head-to-head this season, because the
+   original 5-factor formula was overweighting last-10 form and
+   home court — a team going 4-6 with a -0.7 net rating was being
+   tipped over a 50-win opponent purely by the home-court bonus,
+   which is the bug the user flagged. */
 const DEFAULT_WEIGHTS = {
-  netRating:  0.30,
-  recentForm: 0.25,
-  trueShooting: 0.20,
-  turnoverRate: 0.15,
-  homeCourt:  0.10,
+  netRating:    0.24,
+  winPct:       0.22,   /* NEW — overall season win rate */
+  recentForm:   0.13,   /* down from 0.25 — last 10 is noisy */
+  h2h:          0.12,   /* NEW — head-to-head this season */
+  trueShooting: 0.13,
+  turnoverRate: 0.08,
+  homeCourt:    0.08,
 };
 
 function getWeights() {
   try {
     const stored = localStorage.getItem('nba_trained_weights');
-    if (stored) return JSON.parse(stored);
+    if (stored) return { ...DEFAULT_WEIGHTS, ...JSON.parse(stored) };
   } catch {}
   return { ...DEFAULT_WEIGHTS };
 }
@@ -1475,7 +1483,7 @@ async function runPrediction(homeId, awayId) {
 
     const homeTeam = NBA_TEAMS.find(t => t.id === homeId);
     const awayTeam = NBA_TEAMS.find(t => t.id === awayId);
-    const prediction = calcPrediction(homeStats, awayStats, homeForm, awayForm, true);
+    const prediction = calcPrediction(homeStats, awayStats, homeForm, awayForm, true, h2h);
     renderResults(homeTeam, awayTeam, homeStats, awayStats, homeForm, awayForm, h2h, prediction);
   } catch (err) {
     errBox.textContent = 'Failed to load prediction data: ' + err.message;
@@ -1495,7 +1503,13 @@ async function fetchTeamStats(teamId) {
       if (s) {
         const net = s.ppg - s.oppPpg;
         const ts  = clamp(54 + (s.ppg - 112) * 0.4, 48, 65);
-        return { teamId, offRating: s.ppg, defRating: s.oppPpg, netRating: net, tsPct: ts, toRate: 14, rebPct: 44 };
+        const gp  = s.wins + s.losses;
+        const winPct = gp > 0 ? s.wins / gp : 0.5;
+        return {
+          teamId, offRating: s.ppg, defRating: s.oppPpg, netRating: net,
+          tsPct: ts, toRate: 14, rebPct: 44,
+          wins: s.wins, losses: s.losses, winPct,
+        };
       }
     }
   }
@@ -1506,14 +1520,17 @@ async function fetchTeamStats(teamId) {
     );
     const games = (data.data || []).filter(g => g.home_team_score > 0 && g.visitor_team_score > 0);
     if (games.length === 0) return defaultStats(teamId);
-    let scored = 0, allowed = 0;
+    let scored = 0, allowed = 0, wins = 0;
     games.forEach(g => {
+      const homeWon = g.home_team_score > g.visitor_team_score;
       if (g.home_team.id === teamId) {
         scored  += g.home_team_score;
         allowed += g.visitor_team_score;
+        if (homeWon) wins++;
       } else {
         scored  += g.visitor_team_score;
         allowed += g.home_team_score;
+        if (!homeWon) wins++;
       }
     });
     const n   = games.length;
@@ -1521,7 +1538,11 @@ async function fetchTeamStats(teamId) {
     const def = allowed / n;
     const net = off - def;
     const ts  = clamp(54 + (off - 112) * 0.4, 48, 65);
-    return { teamId, offRating: off, defRating: def, netRating: net, tsPct: ts, toRate: 14, rebPct: 44 };
+    return {
+      teamId, offRating: off, defRating: def, netRating: net,
+      tsPct: ts, toRate: 14, rebPct: 44,
+      wins, losses: n - wins, winPct: wins / n,
+    };
   } catch {
     return defaultStats(teamId);
   }
@@ -1537,6 +1558,7 @@ function defaultStats(teamId) {
     tsPct:     54 + (s % 8),
     toRate:    12 + (s % 5),
     rebPct:    43 + (s % 5),
+    wins: 41, losses: 41, winPct: 0.5,
   };
 }
 
@@ -1554,7 +1576,12 @@ async function fetchLastNGames(teamId, n) {
   } catch { return []; }
 }
 
-/* ── Head to head ── */
+/* ── Head to head ──
+ * BDL's `team_ids[]=A&team_ids[]=B` is an OR filter — it returns
+ * every game either team played, not just their matchups. We have
+ * to post-filter to games where they actually played each other,
+ * otherwise the count balloons to ~160 ("73 of 100 meetings" — the
+ * bug the user saw). Skip games that aren't finished too. */
 async function fetchH2H(team1Id, team2Id) {
   try {
     const data = await apiFetch(
@@ -1563,6 +1590,12 @@ async function fetchH2H(team1Id, team2Id) {
     if (!data.data) return { team1Wins: 0, team2Wins: 0, total: 0 };
     let t1 = 0, t2 = 0;
     for (const g of data.data) {
+      const sameMatchup =
+        (g.home_team.id === team1Id && g.visitor_team.id === team2Id) ||
+        (g.home_team.id === team2Id && g.visitor_team.id === team1Id);
+      if (!sameMatchup) continue;
+      if (g.home_team_score == null || g.visitor_team_score == null) continue;
+      if (g.home_team_score === 0 && g.visitor_team_score === 0) continue;
       const homeWon = g.home_team_score > g.visitor_team_score;
       if ((g.home_team.id === team1Id && homeWon) || (g.visitor_team.id === team1Id && !homeWon)) t1++;
       else t2++;
@@ -1571,8 +1604,11 @@ async function fetchH2H(team1Id, team2Id) {
   } catch { return { team1Wins: 0, team2Wins: 0, total: 0 }; }
 }
 
-/* ── Prediction formula — uses trained weights ── */
-function calcPrediction(homeStats, awayStats, homeForm, awayForm, homeIsHome) {
+/* ── Prediction formula — uses trained weights ──
+ *  Now accepts h2h (head-to-head this season). Both team-stats
+ *  objects must include `winPct`. Last param signature stays
+ *  backward-compatible (homeIsHome stays in 5th slot). */
+function calcPrediction(homeStats, awayStats, homeForm, awayForm, homeIsHome, h2h) {
   const W = getWeights();
 
   const homeFormScore = formScore(homeForm, homeStats.teamId);
@@ -1581,17 +1617,37 @@ function calcPrediction(homeStats, awayStats, homeForm, awayForm, homeIsHome) {
   const normNet = v => clamp((v + 15) / 30 * 100, 0, 100);
   const normTS  = v => clamp((v - 45) / 25 * 100, 0, 100);
   const normTO  = v => clamp((22 - v) / 14 * 100, 0, 100);
+  /* Overall season win% mapped to a 0-100 score — every 1% above
+     .500 adds 2 points so the spread between a 60-win and a 30-win
+     team is meaningful (about 36 points). */
+  const normWinPct = wp => clamp(50 + (wp - 0.5) * 200, 0, 100);
+
+  /* H2H this season — small but real factor. If team has won 3 of 4
+     head-to-head, that's a 75% h2h score for them and 25% for the
+     opponent. With no h2h data both default to 50. */
+  let homeH2H = 50, awayH2H = 50;
+  if (h2h && h2h.total > 0) {
+    homeH2H = (h2h.team1Wins / h2h.total) * 100;
+    awayH2H = (h2h.team2Wins / h2h.total) * 100;
+  }
+
+  const homeWP = homeStats.winPct != null ? homeStats.winPct : 0.5;
+  const awayWP = awayStats.winPct != null ? awayStats.winPct : 0.5;
 
   const homeScore =
     normNet(homeStats.netRating) * W.netRating    +
+    normWinPct(homeWP)           * W.winPct       +
     homeFormScore                * W.recentForm   +
+    homeH2H                      * W.h2h          +
     normTS(homeStats.tsPct)      * W.trueShooting +
     normTO(homeStats.toRate)     * W.turnoverRate +
     (homeIsHome ? 100 : 0)       * W.homeCourt;
 
   const awayScore =
     normNet(awayStats.netRating) * W.netRating    +
+    normWinPct(awayWP)           * W.winPct       +
     awayFormScore                * W.recentForm   +
+    awayH2H                      * W.h2h          +
     normTS(awayStats.tsPct)      * W.trueShooting +
     normTO(awayStats.toRate)     * W.turnoverRate +
     (!homeIsHome ? 100 : 0)      * W.homeCourt;
@@ -1681,7 +1737,7 @@ function renderResults(homeTeam, awayTeam, homeStats, awayStats, homeForm, awayF
   `;
 
   document.getElementById('analysisText').textContent = generateAnalysis(
-    homeTeam, awayTeam, homeStats, awayStats, homeForm, awayForm, pred
+    homeTeam, awayTeam, homeStats, awayStats, homeForm, awayForm, pred, h2h
   );
 
   const badge = document.getElementById('confidenceBadge');
@@ -1782,32 +1838,101 @@ function buildTopFactors(homeTeam, awayTeam, homeStats, awayStats) {
   ];
 }
 
-function generateAnalysis(homeTeam, awayTeam, homeStats, awayStats, homeForm, awayForm, pred) {
-  const winner  = pred.homeProb >= pred.awayProb ? homeTeam : awayTeam;
-  const loser   = pred.homeProb >= pred.awayProb ? awayTeam : homeTeam;
-  const wStats  = pred.homeProb >= pred.awayProb ? homeStats : awayStats;
-  const lStats  = pred.homeProb >= pred.awayProb ? awayStats : homeStats;
-  const winProb = pred.homeProb >= pred.awayProb ? pred.homeProb : pred.awayProb;
-  const wFormPct = pred.homeProb >= pred.awayProb ? pred.homeFormScore : pred.awayFormScore;
+function generateAnalysis(homeTeam, awayTeam, homeStats, awayStats, homeForm, awayForm, pred, h2h) {
+  const winnerIsHome = pred.homeProb >= pred.awayProb;
+  const winner  = winnerIsHome ? homeTeam  : awayTeam;
+  const loser   = winnerIsHome ? awayTeam  : homeTeam;
+  const wStats  = winnerIsHome ? homeStats : awayStats;
+  const lStats  = winnerIsHome ? awayStats : homeStats;
+  const winProb = winnerIsHome ? pred.homeProb : pred.awayProb;
+  const wFormPct = winnerIsHome ? pred.homeFormScore : pred.awayFormScore;
   const wForm   = Math.round(wFormPct / 10);
-  const lForm   = Math.round((pred.homeProb >= pred.awayProb ? pred.awayFormScore : pred.homeFormScore) / 10);
-  const netEdge = (wStats.netRating - lStats.netRating).toFixed(1);
+  const lForm   = Math.round((winnerIsHome ? pred.awayFormScore : pred.homeFormScore) / 10);
+  const netEdgeNum = wStats.netRating - lStats.netRating;
+  const netEdge = netEdgeNum.toFixed(1);
   const tsEdge  = (wStats.tsPct - lStats.tsPct).toFixed(1);
 
-  const W = getWeights();
   const usingCustom = !!localStorage.getItem('nba_trained_weights');
+  const modelNote = usingCustom ? ` (model trained on ${getStoredGames().length} imported games)` : '';
 
-  const netStr  = wStats.netRating > 0 ? `a strong net rating of +${wStats.netRating.toFixed(1)}` : `a net rating of ${wStats.netRating.toFixed(1)}`;
-  const formStr = wForm >= 7 ? `excellent recent form at ${wForm}-${10-wForm} over their last 10` : wForm >= 5 ? `solid recent form at ${wForm}-${10-wForm}` : `a ${wForm}-${10-wForm} record over their last 10 games`;
-  const lFormStr = lForm <= 4 ? `struggling at ${lForm}-${10-lForm} in their last 10` : `going ${lForm}-${10-lForm} in their last 10`;
-  const modelNote = usingCustom ? ` (model trained on ${getStoredGames().length} imported games, home court weight ${pct(W.homeCourt)})` : '';
+  /* Net-rating phrasing — separate POSITIVE/NEGATIVE edge so we never
+     produce "edge of -2.3" (the bug the user flagged). */
+  let netClause;
+  if (netEdgeNum > 1) {
+    netClause = `a net rating of ${wStats.netRating >= 0 ? '+' : ''}${wStats.netRating.toFixed(1)} — a ${netEdgeNum > 5 ? 'dominant' : 'real'} +${netEdge}-point edge per 100 possessions over ${loser.name}.`;
+  } else if (netEdgeNum < -1) {
+    /* The predicted winner has a WORSE net rating than the loser.
+       This happens when other factors (win%, h2h, home court) outweigh
+       net rating. Say so honestly. */
+    netClause = `a net rating of ${wStats.netRating >= 0 ? '+' : ''}${wStats.netRating.toFixed(1)}, actually trailing ${loser.name} by ${Math.abs(netEdgeNum).toFixed(1)} points per 100 — the pick rides on other factors below.`;
+  } else {
+    netClause = `a net rating of ${wStats.netRating >= 0 ? '+' : ''}${wStats.netRating.toFixed(1)}, essentially even with ${loser.name}.`;
+  }
 
-  return [
-    `${winner.name} are projected to win with ${winProb}% probability${modelNote}, backed by ${netStr} — a ${parseFloat(netEdge) > 0 ? 'dominant' : 'narrow'} edge of ${parseFloat(netEdge) > 0 ? '+' : ''}${netEdge} points per 100 possessions over ${loser.name}.`,
-    `Their ${formStr} shows clear momentum, while ${loser.name} are ${lFormStr}.`,
-    `Shooting efficiency ${parseFloat(tsEdge) > 0 ? `also favours ${winner.name}, who post a ${tsEdge}% higher true shooting rate (${wStats.tsPct.toFixed(1)}% vs ${lStats.tsPct.toFixed(1)}%)` : `is comparable, with ${winner.name} at ${wStats.tsPct.toFixed(1)}% true shooting`}.`,
-    `Unless ${loser.name} can force turnovers and heat up from deep, ${winner.name} should control this game from wire to wire.`
-  ].join(' ');
+  /* Season record — the factor that was missing before. */
+  let recordClause = '';
+  if (wStats.winPct != null && lStats.winPct != null) {
+    const wRecord = wStats.wins != null ? `${wStats.wins}-${wStats.losses}` : null;
+    const lRecord = lStats.wins != null ? `${lStats.wins}-${lStats.losses}` : null;
+    if (wRecord && lRecord) {
+      const wpDiff = wStats.winPct - lStats.winPct;
+      if (Math.abs(wpDiff) > 0.05) {
+        recordClause = wpDiff > 0
+          ? `Season-long, ${winner.name} are the stronger side at ${wRecord} vs ${loser.name}'s ${lRecord}.`
+          : `${loser.name} have the better season record (${lRecord}) than ${winner.name} (${wRecord}), so this is an upset call.`;
+      } else {
+        recordClause = `Season records are close — ${winner.name} ${wRecord} vs ${loser.name} ${lRecord}.`;
+      }
+    }
+  }
+
+  /* Form — describe what's actually true, not a generic "momentum". */
+  let formClause;
+  if (wForm >= 7) {
+    formClause = `Recent form backs the pick: ${winner.name} are ${wForm}-${10-wForm} over their last 10, while ${loser.name} are ${lForm}-${10-lForm}.`;
+  } else if (wForm >= 5) {
+    formClause = `${winner.name} have been steady at ${wForm}-${10-wForm} in their last 10 (${loser.name}: ${lForm}-${10-lForm}).`;
+  } else {
+    /* Predicted winner has a LOSING last-10. Honest about it. */
+    formClause = `Form is a concern for the pick — ${winner.name} are only ${wForm}-${10-wForm} in their last 10 (${loser.name}: ${lForm}-${10-lForm}).`;
+  }
+
+  /* H2H this season — only mention if there are games to point to. */
+  let h2hClause = '';
+  if (h2h && h2h.total > 0) {
+    const wH2H = winnerIsHome ? h2h.team1Wins : h2h.team2Wins;
+    const lH2H = winnerIsHome ? h2h.team2Wins : h2h.team1Wins;
+    if (wH2H > lH2H) {
+      h2hClause = `Head-to-head this season, ${winner.name} have won ${wH2H} of ${h2h.total} meetings.`;
+    } else if (lH2H > wH2H) {
+      h2hClause = `${loser.name} hold the head-to-head edge this season at ${lH2H}-${wH2H}, which works against this pick.`;
+    } else {
+      h2hClause = `The teams have split their ${h2h.total} meetings this season ${wH2H}-${lH2H}.`;
+    }
+  }
+
+  /* Shooting — only mention if it actually matters. */
+  let tsClause = '';
+  if (Math.abs(parseFloat(tsEdge)) > 1.5) {
+    tsClause = parseFloat(tsEdge) > 0
+      ? `Shooting efficiency favours ${winner.name} (${wStats.tsPct.toFixed(1)}% true shooting vs ${lStats.tsPct.toFixed(1)}%).`
+      : `${loser.name} actually shoot more efficiently (${lStats.tsPct.toFixed(1)}% vs ${wStats.tsPct.toFixed(1)}%).`;
+  }
+
+  /* Closing — tone matched to confidence. No "wire to wire" on coin flips. */
+  let closing;
+  if (winProb >= 70) {
+    closing = `${winner.name} should control this one barring a cold shooting night.`;
+  } else if (winProb >= 60) {
+    closing = `${winner.name} are favoured, but ${loser.name} have a real path if they win the turnover battle.`;
+  } else {
+    closing = `This is essentially a coin flip — the model leans ${winner.name} by ${Math.abs(winProb - 50)} point${Math.abs(winProb-50) === 1 ? '' : 's'}, but either result would be unsurprising.`;
+  }
+
+  const opener = `${winner.name} are projected to win with ${winProb}% probability${modelNote}, backed by ${netClause}`;
+
+  return [opener, recordClause, h2hClause, formClause, tsClause, closing]
+    .filter(Boolean).join(' ');
 }
 
 /* ════════════════════════════════════════
