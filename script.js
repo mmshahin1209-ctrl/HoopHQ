@@ -985,8 +985,20 @@ async function showGameDetail(game) {
 
   const homeCol = game.homeTeam?.color || '#555';
   const awayCol = game.awayTeam?.color || '#555';
-  const homeWP  = game.homeWinPct != null ? game.homeWinPct : 50;
-  const awayWP  = game.awayWinPct != null ? game.awayWinPct : 50;
+
+  /* Win probability — prefer ESPN's live in-game win prob when present,
+     otherwise fall back to HoopHQ's pre-game formula (the same source
+     the home-page card uses, so the modal never shows 50/50 when the
+     card already showed e.g. "91%"). */
+  let homeWP, awayWP;
+  if (game.homeWinPct != null && game.awayWinPct != null) {
+    homeWP = game.homeWinPct;
+    awayWP = game.awayWinPct;
+  } else {
+    const fallback = quickProbByName(game.homeTeam, game.awayTeam);
+    homeWP = fallback.home;
+    awayWP = fallback.away;
+  }
 
   /* Track win probability over time for the game flow chart */
   if (game.gameId && (game.isLive || game.isFinal)) {
