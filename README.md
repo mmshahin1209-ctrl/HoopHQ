@@ -84,6 +84,15 @@ That means a first-time visitor gets:
 - Instant predictions in the live game modal and the playoff series modal
 - No "Train at AI Lab" dead-ends, no waiting
 
+## Optional: real per-game player stats
+
+By default, the Player page uses a deterministic estimate of each player's last 10 games (the BallDontLie free tier doesn't expose per-game logs, and ESPN's gamelog endpoint blocks browser CORS). If you want real data:
+
+1. Deploy the included Cloudflare Worker — see [`worker/README.md`](worker/README.md).
+2. Paste your Worker URL into `script.js` → `ESPN_PROXY_URL`.
+
+That's it. Takes about 5 minutes, costs $0 (Cloudflare's free tier covers it), and the Player page automatically switches to real ESPN gamelog data with a green caption confirming the source.
+
 ---
 
 ## Design

@@ -1,0 +1,4 @@
+# Cloudflare Wrangler local state
+.wrangler/
+.dev.vars
+node_modules/

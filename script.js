@@ -16,6 +16,13 @@ const API_KEY = 'e3865b48-276e-422f-aed9-b030c21279a9';
 const BASE    = 'https://api.balldontlie.io/v1';
 const HEADERS = { 'Authorization': API_KEY };
 
+/* ─── Optional ESPN gamelog proxy (Cloudflare Worker) ───
+ * Set this to your deployed Worker URL to unlock real per-game
+ * player stats on the Player page. See worker/README.md for the
+ * 2-minute deploy. Leave empty to use the deterministic synthesis
+ * fallback (which is fine — just not real). */
+const ESPN_PROXY_URL = '';
+
 /* ════════════════════════════════════════
    DEFAULT FORMULA WEIGHTS
    These are overridden by trained weights
@@ -2936,13 +2943,12 @@ async function searchPlayers(query) {
         _playerAllStats = [];
 
         /* Render the prediction immediately using synthesised data, then
-           fetch the player's real per-game logs from BallDontLie in the
-           background. When they arrive, re-run the prediction with the
-           real numbers so "last 10" + chart show actual games, not
-           Math.random(). */
+           fetch real per-game logs in the background (ESPN proxy if
+           configured, else BDL). When they arrive, re-render with real
+           numbers so "last 10" + chart show actual games. */
         if (parseInt(document.getElementById('opponentTeam').value)) {
           runPlayerPrediction();
-          fetchRealPlayerStats(p.name).then(stats => {
+          fetchRealPlayerStats(p.name, p.team).then(stats => {
             if (stats && stats.length && _selectedPlayer && _selectedPlayer.id === p.name) {
               _playerAllStats = stats;
               runPlayerPrediction();
@@ -2951,7 +2957,7 @@ async function searchPlayers(query) {
         } else {
           document.getElementById('playerHint').textContent = 'Now select an opponent team to generate the prediction.';
           /* Pre-fetch in the background so it's ready when they pick the opponent */
-          fetchRealPlayerStats(p.name);
+          fetchRealPlayerStats(p.name, p.team);
         }
       });
       dd.appendChild(item);
@@ -2981,30 +2987,76 @@ async function searchPlayers(query) {
   }
 }
 
-/* Look up real per-game stats for a hardcoded-mode player.
- * 1. Search BDL /players?search=<name> to get the player's BDL id.
- * 2. Fetch /stats?player_ids[]=<id>&seasons[]=<current> for game logs.
- * 3. Return the stats sorted newest-first, or null on any failure.
+/* Look up real per-game stats for a player. Tries two sources in
+ * order, returning whichever has real data — or null so the caller
+ * falls back to the deterministic synthesis.
+ *
+ *   1. ESPN proxy (Cloudflare Worker) if ESPN_PROXY_URL is configured.
+ *      This is the recommended path because ESPN has per-game logs
+ *      for the current season for free.
+ *   2. BallDontLie /stats — only works on a paid BDL tier (free tier
+ *      returns 401 for /stats), but we still try in case the user
+ *      pasted a paid key.
+ *
  * Result is cached by name so repeat clicks don't re-fetch. */
-async function fetchRealPlayerStats(playerName) {
+async function fetchRealPlayerStats(playerName, teamAbbr) {
   if (!playerName) return null;
   if (_bdlStatsCache[playerName]) return _bdlStatsCache[playerName];
 
+  /* Path 1: ESPN proxy — only works if the user has deployed the
+     Cloudflare Worker and set ESPN_PROXY_URL above. */
+  if (ESPN_PROXY_URL && teamAbbr) {
+    try {
+      const url = `${ESPN_PROXY_URL}/gamelog?name=${encodeURIComponent(playerName)}&team=${encodeURIComponent(teamAbbr)}`;
+      const r = await fetch(url);
+      if (r.ok) {
+        const data = await r.json();
+        const games = data.games || [];
+        if (games.length > 0) {
+          /* Convert ESPN-flat shape into the BDL-stats shape that the
+             rest of the player page expects: { pts, min, team, game }. */
+          const adapted = games
+            .filter(g => g.pts != null && parseFloat(g.min || 0) > 5)
+            .map(g => ({
+              pts: g.pts,
+              reb: g.reb,
+              ast: g.ast,
+              min: String(g.min),
+              team: { id: -1 },
+              game: {
+                date: g.date,
+                home_team_id: g.isHome ? -1 : -2,
+                visitor_team_id: g.isHome ? -2 : -1,
+              },
+            }));
+          if (adapted.length) {
+            console.log(`[Player] Loaded ${adapted.length} real games for ${playerName} from ESPN proxy`);
+            _bdlStatsCache[playerName] = adapted;
+            return adapted;
+          }
+        }
+      } else {
+        console.log(`[Player] ESPN proxy returned ${r.status} for ${playerName}`);
+      }
+    } catch (err) {
+      console.warn(`[Player] ESPN proxy failed for ${playerName}:`, err.message);
+    }
+  }
+
+  /* Path 2: BDL /stats — paid tier only. Free tier returns 401 and
+     we silently fall through to the synthesis. */
   const season = currentSeason();
   try {
-    /* Step 1 — find the player on BDL */
     const search = await apiFetch(`${BASE}/players?search=${encodeURIComponent(playerName)}&per_page=10`);
     const matches = search.data || [];
     if (!matches.length) return null;
 
-    /* Pick the best match — prefer exact full-name match */
     const target = playerName.toLowerCase();
     const player = matches.find(p =>
       `${p.first_name} ${p.last_name}`.toLowerCase() === target
     ) || matches[0];
     if (!player?.id) return null;
 
-    /* Step 2 — fetch real per-game stats for the current season */
     const stats1 = await apiFetch(`${BASE}/stats?player_ids[]=${player.id}&seasons[]=${season}&per_page=100`);
     let all = stats1.data || [];
     if (stats1.meta?.next_page) {
@@ -3218,8 +3270,12 @@ function runPlayerPrediction() {
       chartCard.appendChild(caption);
     }
     if (isHardcoded) {
-      caption.innerHTML = '<em>Estimated from season average — per-game stats require a paid API tier we don\'t use. Deterministic per player, distributed around the player\'s real season PPG.</em>';
+      caption.innerHTML = '<em>Estimated from season average — per-game stats require a paid API tier we don\'t use. Deterministic per player, distributed around the player\'s real season PPG. Deploy the optional ESPN proxy (see worker/README.md) to unlock real games.</em>';
       caption.style.cssText = 'font-family:var(--font-mono);font-size:0.72rem;color:var(--ink-500);letter-spacing:0.04em;margin-top:10px;line-height:1.45';
+    } else if (hasRealStats && season === 2025) {
+      /* Proxy / paid path returned real games */
+      caption.innerHTML = '<em>Real per-game stats from ESPN via the HoopHQ Cloudflare proxy. Refreshed every 30 minutes.</em>';
+      caption.style.cssText = 'font-family:var(--font-mono);font-size:0.72rem;color:var(--win);letter-spacing:0.04em;margin-top:10px;line-height:1.45';
     } else {
       caption.textContent = '';
     }

@@ -1,0 +1,6 @@
+name = "hoophq-espn-proxy"
+main = "espn-proxy.js"
+compatibility_date = "2024-11-01"
+
+# Free Workers plan covers 100,000 requests/day — way more than this
+# project will ever use. No paid features required.
