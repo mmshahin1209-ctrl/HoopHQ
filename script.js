@@ -2876,6 +2876,9 @@ function getHardcodedBracket() {
 ════════════════════════════════════════ */
 let _selectedPlayer = null;
 let _playerAllStats = [];
+/* Cache of BDL per-game stats by hardcoded player name — avoids
+   hammering BDL when the user re-clicks the same player. */
+const _bdlStatsCache = {};
 let _playerSeasonAvg = null;
 
 function initPlayerPage() {
@@ -2931,8 +2934,25 @@ async function searchPlayers(query) {
         _selectedPlayer = { first_name: p.name.split(' ')[0], last_name: p.name.split(' ').slice(1).join(' '), team: { full_name: p.teamFull, abbreviation: p.team, id: p.teamId }, position: p.pos, id: p.name };
         _playerSeasonAvg = p;
         _playerAllStats = [];
-        if (parseInt(document.getElementById('opponentTeam').value)) runPlayerPrediction();
-        else document.getElementById('playerHint').textContent = 'Now select an opponent team to generate the prediction.';
+
+        /* Render the prediction immediately using synthesised data, then
+           fetch the player's real per-game logs from BallDontLie in the
+           background. When they arrive, re-run the prediction with the
+           real numbers so "last 10" + chart show actual games, not
+           Math.random(). */
+        if (parseInt(document.getElementById('opponentTeam').value)) {
+          runPlayerPrediction();
+          fetchRealPlayerStats(p.name).then(stats => {
+            if (stats && stats.length && _selectedPlayer && _selectedPlayer.id === p.name) {
+              _playerAllStats = stats;
+              runPlayerPrediction();
+            }
+          });
+        } else {
+          document.getElementById('playerHint').textContent = 'Now select an opponent team to generate the prediction.';
+          /* Pre-fetch in the background so it's ready when they pick the opponent */
+          fetchRealPlayerStats(p.name);
+        }
       });
       dd.appendChild(item);
     });
@@ -2958,6 +2978,55 @@ async function searchPlayers(query) {
     } catch (err) {
       dd.innerHTML = `<div class="dropdown-empty">Search failed — ${err.message}</div>`;
     }
+  }
+}
+
+/* Look up real per-game stats for a hardcoded-mode player.
+ * 1. Search BDL /players?search=<name> to get the player's BDL id.
+ * 2. Fetch /stats?player_ids[]=<id>&seasons[]=<current> for game logs.
+ * 3. Return the stats sorted newest-first, or null on any failure.
+ * Result is cached by name so repeat clicks don't re-fetch. */
+async function fetchRealPlayerStats(playerName) {
+  if (!playerName) return null;
+  if (_bdlStatsCache[playerName]) return _bdlStatsCache[playerName];
+
+  const season = currentSeason();
+  try {
+    /* Step 1 — find the player on BDL */
+    const search = await apiFetch(`${BASE}/players?search=${encodeURIComponent(playerName)}&per_page=10`);
+    const matches = search.data || [];
+    if (!matches.length) return null;
+
+    /* Pick the best match — prefer exact full-name match */
+    const target = playerName.toLowerCase();
+    const player = matches.find(p =>
+      `${p.first_name} ${p.last_name}`.toLowerCase() === target
+    ) || matches[0];
+    if (!player?.id) return null;
+
+    /* Step 2 — fetch real per-game stats for the current season */
+    const stats1 = await apiFetch(`${BASE}/stats?player_ids[]=${player.id}&seasons[]=${season}&per_page=100`);
+    let all = stats1.data || [];
+    if (stats1.meta?.next_page) {
+      try {
+        const stats2 = await apiFetch(`${BASE}/stats?player_ids[]=${player.id}&seasons[]=${season}&per_page=100&page=2`);
+        all = all.concat(stats2.data || []);
+      } catch { /* page 2 is non-fatal */ }
+    }
+    const sorted = all
+      .filter(s => s.pts != null && parseFloat(s.min || 0) > 5)
+      .sort((a, b) => new Date(b.game?.date || 0) - new Date(a.game?.date || 0));
+
+    if (sorted.length === 0) {
+      console.log(`[Player] No BDL game logs returned for ${playerName}`);
+      return null;
+    }
+    console.log(`[Player] Loaded ${sorted.length} real games for ${playerName} from BDL`);
+    _bdlStatsCache[playerName] = sorted;
+    return sorted;
+  } catch (err) {
+    console.warn(`[Player] BDL stats lookup failed for ${playerName}:`, err.message);
+    return null;
   }
 }
 
@@ -2998,8 +3067,16 @@ function runPlayerPrediction() {
   if (!oppId || !oppTeam) return;
 
   const season    = currentSeason();
-  const isHardcoded = season === 2025 && _playerSeasonAvg.pts != null && typeof _playerSeasonAvg.name === 'string';
-  const seasonAvg = isHardcoded ? _playerSeasonAvg.pts : (parseFloat(_playerSeasonAvg.pts) || 0);
+  /* "Hardcoded" path = we're using the hardcoded season averages AND we
+     don't have real per-game data yet. If BDL has filled in the per-game
+     stats since the user clicked, switch to the real-data path so the
+     "last 10" chart shows actual games instead of Math.random(). */
+  const hasRealStats = _playerAllStats && _playerAllStats.length > 0;
+  const isHardcoded = season === 2025 && _playerSeasonAvg.pts != null &&
+                      typeof _playerSeasonAvg.name === 'string' && !hasRealStats;
+  const seasonAvg = (season === 2025 && _playerSeasonAvg.pts != null && typeof _playerSeasonAvg.name === 'string')
+    ? _playerSeasonAvg.pts
+    : (parseFloat(_playerSeasonAvg.pts) || 0);
 
   /* ── Branch: Hardcoded data (2025-26) vs API game logs ── */
   let homePpg, awayPpg, locationAvg, recentAvg, vsAvg, vsLocAvg;
@@ -3014,8 +3091,10 @@ function runPlayerPrediction() {
     homeGCount  = Math.round((_playerSeasonAvg.gp || 72) / 2);
     awayGCount  = (_playerSeasonAvg.gp || 72) - homeGCount;
 
-    /* Estimate recent form — slight randomization around season avg */
-    recentAvg = +(seasonAvg * (0.97 + Math.random() * 0.06)).toFixed(1);
+    /* recentAvg is just the mean of the (deterministic) last 10 we
+       generate below — set after the loop, so it always matches the
+       chart instead of drifting on its own. */
+    recentAvg = seasonAvg;
 
     /* vs Opponent: Adjust based on opponent's defensive quality */
     const oppStand = STANDINGS_2025_26.find(s => s.name === oppTeam.name);
@@ -3026,13 +3105,30 @@ function runPlayerPrediction() {
     vsLocAvg = +(locationAvg * oppDefRatio).toFixed(1);
     vsPts    = [vsAvg]; /* indicate we have an estimate */
 
-    /* Generate approximate last-10 game scores for the chart */
+    /* Generate a DETERMINISTIC estimated last-10 from season average.
+     * Without a paid stats API (BallDontLie free tier doesn't expose
+     * per-game logs and ESPN's gamelog endpoint blocks browser CORS),
+     * we can't get real per-game data here — but the previous code
+     * used Math.random() which made the chart change on every click.
+     * Now we seed a deterministic PRNG from the player's name, so a
+     * given player always shows the same estimated last 10. */
+    const seedStr = (_playerSeasonAvg.name || _selectedPlayer.id || 'x');
+    let seed = 0;
+    for (let i = 0; i < seedStr.length; i++) seed = (seed * 31 + seedStr.charCodeAt(i)) & 0xffffffff;
+    const rand = () => {
+      seed = (seed * 1664525 + 1013904223) & 0xffffffff;
+      return ((seed >>> 0) / 4294967296);
+    };
     const estStdDev = seasonAvg > 25 ? 7 : seasonAvg > 18 ? 5.5 : 4;
     for (let i = 0; i < 10; i++) {
-      const noise = (Math.random() - 0.5) * 2 * estStdDev;
+      /* Box-Muller-ish: average two uniforms for a bell-shaped distribution */
+      const noise = ((rand() + rand()) - 1) * estStdDev;
       last10.push(Math.max(2, Math.round(seasonAvg + noise)));
     }
     allPts = last10;
+    /* Lock recentAvg to the chart's actual mean so the factor row,
+       chart, and prediction are always internally consistent. */
+    recentAvg = +(last10.reduce((a, b) => a + b, 0) / last10.length).toFixed(1);
 
   } else {
     /* Original logic for API game-log data */
@@ -3110,6 +3206,24 @@ function runPlayerPrediction() {
 
   /* Canvas chart — oldest→newest */
   if (last10.length) setTimeout(() => drawScoreChart([...last10].reverse(), seasonAvg), 30);
+
+  /* If we're showing synthesised data, add a one-line "estimated" caption
+     under the chart so the user knows it isn't real per-game data. */
+  const chartCard = document.querySelector('.chart-card');
+  if (chartCard) {
+    let caption = chartCard.querySelector('.player-chart-caption');
+    if (!caption) {
+      caption = document.createElement('div');
+      caption.className = 'player-chart-caption';
+      chartCard.appendChild(caption);
+    }
+    if (isHardcoded) {
+      caption.innerHTML = '<em>Estimated from season average — per-game stats require a paid API tier we don\'t use. Deterministic per player, distributed around the player\'s real season PPG.</em>';
+      caption.style.cssText = 'font-family:var(--font-mono);font-size:0.72rem;color:var(--ink-500);letter-spacing:0.04em;margin-top:10px;line-height:1.45';
+    } else {
+      caption.textContent = '';
+    }
+  }
 
   /* Season highlights */
   if (allPts.length) {
